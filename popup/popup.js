@@ -60,12 +60,10 @@ document.addEventListener('DOMContentLoaded', async () => {
     inactiveDaysInput.value = settings.inactiveDays;
   }
 
-  // Check if there's an ongoing scan - restore UI state
+  // Check if there's an ongoing or paused scan - restore UI state
   if (settings.scanState) {
     const state = settings.scanState;
-    isScanning = true;
-    scanBtn.disabled = true;
-    stopBtn.disabled = false;
+    const isPaused = state.currentIndex > 0 && state.currentIndex < state.accounts.length;
 
     // Show progress UI
     progressContainer.style.display = 'block';
@@ -78,20 +76,36 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.inactive && state.inactive.length > 0) {
       inactiveBadge.style.display = 'inline-block';
       inactiveFoundCount.textContent = state.inactive.length;
+
+      // Also load results for review
+      inactiveAccounts = state.inactive;
+      displayResults();
     }
 
-    // Update status
-    const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
-    updateStatus('🔍', `[${progressPct}%] Scanning...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
-
-    // Show ETA
-    if (state.startTime && state.currentIndex > 0) {
-      const elapsed = (Date.now() - state.startTime) / 1000;
-      const avgPerAccount = elapsed / state.currentIndex;
+    if (isPaused) {
+      // Scan was paused - show Resume button
+      scanBtn.textContent = '▶️ Resume';
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
       const remaining = state.accounts.length - state.currentIndex;
-      const etaSeconds = remaining * avgPerAccount;
-      etaDisplay.style.display = 'block';
-      etaTime.textContent = formatDuration(etaSeconds);
+      updateStatus('⏸️', `Paused - ${state.inactive?.length || 0} inactive found`, `${remaining} accounts remaining`, 'stopped');
+    } else {
+      // Scan is actively running
+      isScanning = true;
+      scanBtn.disabled = true;
+      stopBtn.disabled = false;
+      const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
+      updateStatus('🔍', `[${progressPct}%] Scanning...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
+
+      // Show ETA
+      if (state.startTime && state.currentIndex > 0) {
+        const elapsed = (Date.now() - state.startTime) / 1000;
+        const avgPerAccount = elapsed / state.currentIndex;
+        const remaining = state.accounts.length - state.currentIndex;
+        const etaSeconds = remaining * avgPerAccount;
+        etaDisplay.style.display = 'block';
+        etaTime.textContent = formatDuration(etaSeconds);
+      }
     }
   }
   // Load cached results if no active scan
@@ -224,10 +238,49 @@ async function showTimeWarning() {
   timeWarningModal.style.display = 'flex';
 }
 
-// Start Scan - show warning first
+// Resume an existing paused scan
+async function resumeExistingScan(scanState) {
+  isScanning = true;
+  scanBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  const remaining = scanState.accounts.length - scanState.currentIndex;
+  updateStatus('🔍', `Resuming scan...`, `${remaining} accounts remaining`, 'scanning');
+
+  progressContainer.style.display = 'block';
+  const percent = (scanState.currentIndex / scanState.accounts.length) * 100;
+  progressFill.style.width = `${percent}%`;
+  progressCurrent.textContent = scanState.currentIndex;
+  progressTotal.textContent = scanState.accounts.length;
+
+  if (scanState.inactive && scanState.inactive.length > 0) {
+    inactiveBadge.style.display = 'inline-block';
+    inactiveFoundCount.textContent = scanState.inactive.length;
+  }
+
+  try {
+    await sendMessageToTab({ action: 'resumeScan' });
+    console.log('✅ Scan resumed');
+  } catch (error) {
+    console.error('Error resuming scan:', error);
+    updateStatus('❌', 'Resume failed', 'Please refresh the X.com page', 'error');
+    resetScanState();
+  }
+}
+
+// Start Scan - check for resume or show warning
 scanBtn.addEventListener('click', async () => {
   if (isScanning) return;
-  showTimeWarning();
+
+  // Check if there's a paused scan to resume
+  const data = await chrome.storage.local.get(['scanState']);
+  if (data.scanState && data.scanState.currentIndex > 0) {
+    // Resume existing scan
+    resumeExistingScan(data.scanState);
+  } else {
+    // Start new scan
+    showTimeWarning();
+  }
 });
 
 // Cancel scan from warning modal
@@ -246,6 +299,7 @@ async function startActualScan() {
   if (isScanning) return;
 
   isScanning = true;
+  scanBtn.textContent = '🔍 Start Scan';
   scanBtn.disabled = true;
   stopBtn.disabled = false;
   resultsSection.style.display = 'none';
@@ -288,10 +342,29 @@ async function startActualScan() {
 // Stop Scan/Unfollow
 stopBtn.addEventListener('click', async () => {
   try {
-    await sendMessageToTab({ action: 'stop' });
-    updateStatus('⏹️', 'Stopped', 'Scan was cancelled', 'stopped');
+    const response = await sendMessageToTab({ action: 'stop' });
+
+    // Get the current scan state to show progress
+    const data = await chrome.storage.local.get(['scanState', 'scanResults']);
+    const scanState = data.scanState;
+    const results = data.scanResults || response?.partialResults || [];
+
+    if (results.length > 0) {
+      inactiveAccounts = results;
+      const remaining = scanState ? scanState.accounts.length - scanState.currentIndex : 0;
+      updateStatus('⏸️', `Paused - ${results.length} inactive found`, remaining > 0 ? `${remaining} accounts remaining` : 'Review results below', 'stopped');
+      displayResults();
+
+      // Show Resume button if there's more to scan
+      if (remaining > 0) {
+        scanBtn.textContent = '▶️ Resume';
+      }
+    } else {
+      updateStatus('⏹️', 'Stopped', 'No inactive accounts found yet', 'stopped');
+      scanBtn.textContent = '▶️ Resume';
+    }
+
     resetScanState();
-    await chrome.storage.local.remove('scanInProgress');
   } catch (error) {
     console.error('Error stopping:', error);
   }
@@ -306,6 +379,7 @@ clearBtn.addEventListener('click', async () => {
   currentAccount.style.display = 'none';
   etaDisplay.style.display = 'none';
   inactiveBadge.style.display = 'none';
+  scanBtn.textContent = '🔍 Start Scan';
   updateStatus('✅', 'Ready to scan', 'Storage cleared - click "Start Scan" to begin', 'ready');
   resetScanState();
   console.log('🗑️ Storage cleared');
@@ -422,6 +496,7 @@ function handleScanComplete(results) {
   chrome.storage.local.set({ scanResults: inactiveAccounts });
 
   resetScanState();
+  scanBtn.textContent = '🔍 Start Scan';
   currentAccount.style.display = 'none';
 
   if (inactiveAccounts.length === 0) {
@@ -575,6 +650,7 @@ function resetScanState() {
   isUnfollowing = false;
   scanBtn.disabled = false;
   stopBtn.disabled = true;
+  // Don't reset button text here - let callers decide
 }
 
 // Utility: Escape HTML

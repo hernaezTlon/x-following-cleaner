@@ -35,8 +35,13 @@
     } else if (message.action === 'stop') {
       shouldStop = true;
       isRunning = false;
-      chrome.storage.local.remove(['scanState']);
-      sendResponse({ status: 'stopped' });
+      // Save partial results before stopping (don't remove scanState so we can resume)
+      const data = await chrome.storage.local.get(['scanState']);
+      if (data.scanState && data.scanState.inactive) {
+        await chrome.storage.local.set({ scanResults: data.scanState.inactive });
+        console.log(`⏸️ Paused with ${data.scanState.inactive.length} results saved`);
+      }
+      sendResponse({ status: 'stopped', partialResults: data.scanState?.inactive || [] });
     } else if (message.action === 'ping') {
       sendResponse({ status: 'alive' });
     } else if (message.action === 'resumeScan') {
