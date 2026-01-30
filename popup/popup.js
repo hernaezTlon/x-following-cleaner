@@ -53,14 +53,48 @@ const MAX_TIME_SAMPLES = 10;
 document.addEventListener('DOMContentLoaded', async () => {
   console.log('🧹 Popup loaded');
 
-  // Load saved settings
-  const settings = await chrome.storage.local.get(['inactiveDays', 'scanResults']);
+  // Load saved settings and check for ongoing scan
+  const settings = await chrome.storage.local.get(['inactiveDays', 'scanResults', 'scanState']);
   if (settings.inactiveDays) {
     inactiveDaysInput.value = settings.inactiveDays;
   }
 
-  // Load cached results
-  if (settings.scanResults && settings.scanResults.length > 0) {
+  // Check if there's an ongoing scan - restore UI state
+  if (settings.scanState) {
+    const state = settings.scanState;
+    isScanning = true;
+    scanBtn.disabled = true;
+    stopBtn.disabled = false;
+
+    // Show progress UI
+    progressContainer.style.display = 'block';
+    const percent = state.accounts.length > 0 ? (state.currentIndex / state.accounts.length) * 100 : 0;
+    progressFill.style.width = `${percent}%`;
+    progressCurrent.textContent = state.currentIndex;
+    progressTotal.textContent = state.accounts.length;
+
+    // Show inactive count
+    if (state.inactive && state.inactive.length > 0) {
+      inactiveBadge.style.display = 'inline-block';
+      inactiveFoundCount.textContent = state.inactive.length;
+    }
+
+    // Update status
+    const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
+    updateStatus('🔍', `[${progressPct}%] Scanning...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
+
+    // Show ETA
+    if (state.startTime && state.currentIndex > 0) {
+      const elapsed = (Date.now() - state.startTime) / 1000;
+      const avgPerAccount = elapsed / state.currentIndex;
+      const remaining = state.accounts.length - state.currentIndex;
+      const etaSeconds = remaining * avgPerAccount;
+      etaDisplay.style.display = 'block';
+      etaTime.textContent = formatDuration(etaSeconds);
+    }
+  }
+  // Load cached results if no active scan
+  else if (settings.scanResults && settings.scanResults.length > 0) {
     inactiveAccounts = settings.scanResults;
     displayResults();
   }
@@ -173,16 +207,15 @@ function formatDuration(seconds) {
 
 // Show time warning modal
 async function showTimeWarning() {
-  // First, we need to estimate account count by peeking at the page
-  // For now, show generic estimate (will update once we know the count)
-  const estimatedSeconds = 3; // seconds per account
+  // GraphQL API mode is much faster: ~1.5 seconds per account
+  const estimatedSeconds = 1.5;
 
   // Try to get a rough estimate from the page
   try {
     const response = await sendMessageToTab({ action: 'ping' });
-    // We'll show a generic estimate for now
+    // Show estimate for API mode
     estimatedTimeEl.textContent = 'Depends on following count';
-    estimatedTimeEl.innerHTML = '<span style="font-size: 14px; color: #8899a6;">~3 seconds per account<br>Example: 500 accounts ≈ 25 minutes</span>';
+    estimatedTimeEl.innerHTML = '<span style="font-size: 14px; color: #8899a6;">~1-2 seconds per account (API mode)<br>Example: 500 accounts ≈ 10-15 minutes</span>';
   } catch (e) {
     estimatedTimeEl.textContent = 'Unknown';
   }
@@ -537,7 +570,7 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
-// Keep popup alive by periodic pings
+// Keep popup alive and refresh state from storage
 setInterval(async () => {
   if (isScanning || isUnfollowing) {
     try {
@@ -546,6 +579,74 @@ setInterval(async () => {
       // Ignore ping errors
     }
   }
-}, 5000);
+
+  // Refresh state from storage to keep UI updated
+  const data = await chrome.storage.local.get(['scanState']);
+  if (data.scanState) {
+    const state = data.scanState;
+
+    // Update UI if we're scanning
+    if (!isScanning) {
+      isScanning = true;
+      scanBtn.disabled = true;
+      stopBtn.disabled = false;
+    }
+
+    progressContainer.style.display = 'block';
+    const percent = state.accounts.length > 0 ? (state.currentIndex / state.accounts.length) * 100 : 0;
+    progressFill.style.width = `${percent}%`;
+    progressCurrent.textContent = state.currentIndex;
+    progressTotal.textContent = state.accounts.length;
+
+    // Show inactive count
+    if (state.inactive && state.inactive.length > 0) {
+      inactiveBadge.style.display = 'inline-block';
+      inactiveFoundCount.textContent = state.inactive.length;
+    }
+
+    // Update status
+    const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
+    const currentAcc = state.accounts[state.currentIndex]?.username || '...';
+    updateStatus('🔍', `[${progressPct}%] Checking @${currentAcc}...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
+
+    // Show current account
+    currentAccount.style.display = 'block';
+    currentAccountName.textContent = '@' + currentAcc;
+
+    // Update ETA
+    if (state.startTime && state.currentIndex > 0) {
+      const elapsed = (Date.now() - state.startTime) / 1000;
+      const avgPerAccount = elapsed / state.currentIndex;
+      const remaining = state.accounts.length - state.currentIndex;
+      const etaSeconds = remaining * avgPerAccount;
+      etaDisplay.style.display = 'block';
+      etaTime.textContent = formatDuration(etaSeconds);
+    }
+
+    // Check if scan completed
+    if (state.currentIndex >= state.accounts.length) {
+      inactiveAccounts = state.inactive || [];
+      chrome.storage.local.set({ scanResults: inactiveAccounts });
+      chrome.storage.local.remove(['scanState']);
+      resetScanState();
+      currentAccount.style.display = 'none';
+      if (inactiveAccounts.length > 0) {
+        updateStatus('✅', `Found ${inactiveAccounts.length} inactive`, 'Review and select accounts to unfollow', 'complete');
+        displayResults();
+      } else {
+        updateStatus('🎉', 'All accounts active!', 'No inactive accounts found', 'success');
+        progressContainer.style.display = 'none';
+      }
+    }
+  } else if (isScanning) {
+    // Scan was stopped or completed externally
+    const results = await chrome.storage.local.get(['scanResults']);
+    if (results.scanResults && results.scanResults.length > 0) {
+      inactiveAccounts = results.scanResults;
+      displayResults();
+    }
+    resetScanState();
+  }
+}, 1000);
 
 console.log('🧹 Popup script ready');
