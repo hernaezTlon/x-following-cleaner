@@ -435,6 +435,25 @@ footer {
   border-top: 1px solid #38444d;
 }
 
+.sponsor-btn {
+  display: inline-block;
+  background: linear-gradient(135deg, #ea4aaa 0%, #f78166 100%);
+  color: #fff;
+  padding: 8px 20px;
+  border-radius: 9999px;
+  font-size: 13px;
+  font-weight: 600;
+  text-decoration: none;
+  margin-bottom: 10px;
+  transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.sponsor-btn:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(234, 74, 170, 0.4);
+  text-decoration: none;
+}
+
 footer p {
   font-size: 11px;
   color: #8899a6;

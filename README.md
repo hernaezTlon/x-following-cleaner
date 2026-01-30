@@ -98,4 +98,6 @@ Use at your own risk. The author is not responsible for any account restrictions
 
 ⭐ **If you find this useful, please star the repo!**
 
-🐛 Found a bug? [Open an issue](https://github.com/hernaez/x-following-cleaner/issues)
+💖 **[Sponsor this project](https://github.com/sponsors/hernaezTlon)** - Your support helps keep this free!
+
+🐛 Found a bug? [Open an issue](https://github.com/hernaezTlon/x-following-cleaner/issues)
