@@ -409,6 +409,12 @@
         total: scanState.accounts.length,
         status: statusMsg
       });
+
+      // IMPORTANT: Save results to storage BEFORE removing scanState
+      // This ensures results persist even if popup wasn't open
+      await chrome.storage.local.set({ scanResults: scanState.inactive });
+      console.log(`💾 Saved ${scanState.inactive.length} results to storage`);
+
       sendMsg({ type: 'scanComplete', results: scanState.inactive });
       await chrome.storage.local.remove(['scanState']);
     }
