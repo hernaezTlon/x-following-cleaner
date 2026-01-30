@@ -27,6 +27,7 @@ const confirmModal = document.getElementById('confirmModal');
 const confirmCount = document.getElementById('confirmCount');
 const confirmYes = document.getElementById('confirmYes');
 const confirmNo = document.getElementById('confirmNo');
+const clearBtn = document.getElementById('clearBtn');
 
 // Time warning modal elements
 const timeWarningModal = document.getElementById('timeWarningModal');
@@ -294,6 +295,20 @@ stopBtn.addEventListener('click', async () => {
   } catch (error) {
     console.error('Error stopping:', error);
   }
+});
+
+// Clear all saved data
+clearBtn.addEventListener('click', async () => {
+  await chrome.storage.local.remove(['scanState', 'scanResults', 'scanInProgress', 'scanIntent']);
+  inactiveAccounts = [];
+  resultsSection.style.display = 'none';
+  progressContainer.style.display = 'none';
+  currentAccount.style.display = 'none';
+  etaDisplay.style.display = 'none';
+  inactiveBadge.style.display = 'none';
+  updateStatus('✅', 'Ready to scan', 'Storage cleared - click "Start Scan" to begin', 'ready');
+  resetScanState();
+  console.log('🗑️ Storage cleared');
 });
 
 // Listen for messages from content script

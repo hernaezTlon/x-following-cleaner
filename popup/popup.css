@@ -256,10 +256,12 @@ h1 {
   font-size: 12px;
   cursor: pointer;
   padding: 4px 8px;
+  flex: none;
 }
 
 .btn-link:hover {
   text-decoration: underline;
+  color: #1a8cd8;
 }
 
 /* Results */
