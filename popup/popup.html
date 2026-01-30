@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>X Following Cleaner</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>🧹 X Following Cleaner</h1>
+      <p class="subtitle">Remove inactive accounts from your following list</p>
+    </header>
+
+    <!-- Settings Section -->
+    <section class="settings">
+      <div class="setting-row">
+        <label for="inactiveDays">Inactive threshold:</label>
+        <div class="input-group">
+          <input type="number" id="inactiveDays" min="1" max="365" value="30">
+          <span>days</span>
+        </div>
+      </div>
+    </section>
+
+    <!-- Live Status Section -->
+    <section class="status">
+      <div class="status-box" id="statusBox">
+        <div class="status-icon" id="statusIcon">⏸️</div>
+        <div class="status-text">
+          <div class="status-message" id="statusMessage">Ready to scan</div>
+          <div class="status-detail" id="statusDetail">Make sure you're on x.com and logged in</div>
+        </div>
+      </div>
+      <div class="progress-container" id="progressContainer" style="display: none;">
+        <div class="progress-bar">
+          <div class="progress-fill" id="progressFill"></div>
+        </div>
+        <div class="progress-stats">
+          <span id="progressCurrent">0</span> / <span id="progressTotal">0</span>
+          <span class="inactive-badge" id="inactiveBadge" style="display: none;">
+            🚫 <span id="inactiveFoundCount">0</span> inactive
+          </span>
+        </div>
+        <div class="eta-display" id="etaDisplay" style="display: none;">
+          ⏱️ ETA: <span id="etaTime">Calculating...</span>
+        </div>
+      </div>
+      <div class="current-account" id="currentAccount" style="display: none;">
+        Checking: <span id="currentAccountName">@username</span>
+      </div>
+    </section>
+
+    <!-- Action Buttons -->
+    <section class="actions">
+      <button id="scanBtn" class="btn btn-primary">
+        🔍 Start Scan
+      </button>
+      <button id="stopBtn" class="btn btn-secondary" disabled>
+        ⏹️ Stop
+      </button>
+    </section>
+
+    <!-- Results Section -->
+    <section class="results" id="resultsSection" style="display: none;">
+      <div class="results-header">
+        <h2>Inactive Accounts (<span id="inactiveCount">0</span>)</h2>
+        <div class="select-actions">
+          <button id="selectAllBtn" class="btn-link">Select All</button>
+          <button id="deselectAllBtn" class="btn-link">Deselect All</button>
+        </div>
+      </div>
+      <div class="accounts-list" id="accountsList">
+        <!-- Account items will be inserted here -->
+      </div>
+      <div class="unfollow-actions">
+        <button id="unfollowSelectedBtn" class="btn btn-danger" disabled>
+          🚫 Unfollow Selected (<span id="selectedCount">0</span>)
+        </button>
+      </div>
+    </section>
+
+    <!-- Time Warning Modal -->
+    <div class="modal" id="timeWarningModal" style="display: none;">
+      <div class="modal-content">
+        <h3>⏱️ Time Estimate</h3>
+        <p>To accurately check each account's activity, this tool needs to visit each profile page.</p>
+        <p class="estimate-box">
+          <strong>Estimated time:</strong><br>
+          <span id="estimatedTime" class="estimate-time">~30 minutes</span><br>
+          <small>(~3 seconds per account)</small>
+        </p>
+        <p class="tip">💡 <strong>Tip:</strong> You can leave the tab running in the background. Progress is saved if you need to stop and resume later.</p>
+        <div class="modal-actions">
+          <button id="startScanConfirm" class="btn btn-primary">Start Scan</button>
+          <button id="cancelScan" class="btn btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Confirmation Modal -->
+    <div class="modal" id="confirmModal" style="display: none;">
+      <div class="modal-content">
+        <h3>⚠️ Confirm Unfollow</h3>
+        <p>Are you sure you want to unfollow <strong><span id="confirmCount">0</span></strong> accounts?</p>
+        <p class="warning">This action cannot be undone.</p>
+        <div class="modal-actions">
+          <button id="confirmYes" class="btn btn-danger">Yes, Unfollow</button>
+          <button id="confirmNo" class="btn btn-secondary">Cancel</button>
+        </div>
+      </div>
+    </div>
+
+    <footer>
+      <p>Free & Open Source by <strong>Damian Hernaez</strong></p>
+      <p class="credits">Built with <a href="https://claude.ai/code" target="_blank">Claude Code Opus</a></p>
+      <p><a href="https://github.com/hernaez/x-following-cleaner" target="_blank">GitHub</a></p>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
