@@ -28,6 +28,15 @@ const confirmCount = document.getElementById('confirmCount');
 const confirmYes = document.getElementById('confirmYes');
 const confirmNo = document.getElementById('confirmNo');
 const clearBtn = document.getElementById('clearBtn');
+const skippedSection = document.getElementById('skippedSection');
+const skippedList = document.getElementById('skippedList');
+const skippedCount = document.getElementById('skippedCount');
+const retrySkippedBtn = document.getElementById('retrySkippedBtn');
+const clearSkippedBtn = document.getElementById('clearSkippedBtn');
+const debugSection = document.getElementById('debugSection');
+const debugList = document.getElementById('debugList');
+const debugCount = document.getElementById('debugCount');
+const clearDebugBtn = document.getElementById('clearDebugBtn');
 
 // Time warning modal elements
 const timeWarningModal = document.getElementById('timeWarningModal');
@@ -43,7 +52,14 @@ const etaTime = document.getElementById('etaTime');
 let isScanning = false;
 let isUnfollowing = false;
 let inactiveAccounts = [];
+let skippedAccounts = [];
+let debugEntries = [];
 let currentTabId = null;
+
+// CODEX: Treat scanState as running only if the heartbeat is recent (covers 30s cooldowns).
+const HEARTBEAT_STALE_MS = 45000;
+// CODEX: Track recent progress messages so storage sync doesn't regress the UI.
+let lastScanProgressAt = 0;
 
 // Timing tracking for ETA
 let scanStartTime = null;
@@ -55,7 +71,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   console.log('🧹 Popup loaded');
 
   // Load saved settings and check for ongoing scan
-  const settings = await chrome.storage.local.get(['inactiveDays', 'scanResults', 'scanState']);
+  const settings = await chrome.storage.local.get(['inactiveDays', 'scanResults', 'scanState', 'scanSkipped', 'unfollowDebug']);
   if (settings.inactiveDays) {
     inactiveDaysInput.value = settings.inactiveDays;
   }
@@ -63,7 +79,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check if there's an ongoing or paused scan - restore UI state
   if (settings.scanState) {
     const state = settings.scanState;
-    const isPaused = state.currentIndex > 0 && state.currentIndex < state.accounts.length;
+    const now = Date.now();
+    const heartbeatAge = state.lastHeartbeat ? now - state.lastHeartbeat : null;
+    const isLikelyRunning = state.status === 'running' || (heartbeatAge !== null && heartbeatAge < HEARTBEAT_STALE_MS);
+    const isPaused = state.status === 'paused' || (!isLikelyRunning && state.currentIndex > 0 && state.currentIndex < state.accounts.length);
 
     // Show progress UI
     progressContainer.style.display = 'block';
@@ -82,6 +101,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       displayResults();
     }
 
+    if (state.skipped && state.skipped.length > 0) {
+      skippedAccounts = state.skipped;
+      displaySkipped();
+    }
+
     if (isPaused) {
       // Scan was paused - show Resume button
       scanBtn.textContent = '▶️ Resume';
@@ -89,9 +113,10 @@ document.addEventListener('DOMContentLoaded', async () => {
       stopBtn.disabled = true;
       const remaining = state.accounts.length - state.currentIndex;
       updateStatus('⏸️', `Paused - ${state.inactive?.length || 0} inactive found`, `${remaining} accounts remaining`, 'stopped');
-    } else {
+    } else if (isLikelyRunning) {
       // Scan is actively running
       isScanning = true;
+      scanBtn.textContent = '🔍 Scanning...';
       scanBtn.disabled = true;
       stopBtn.disabled = false;
       const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
@@ -106,12 +131,27 @@ document.addEventListener('DOMContentLoaded', async () => {
         etaDisplay.style.display = 'block';
         etaTime.textContent = formatDuration(etaSeconds);
       }
+    } else {
+      // CODEX: Unknown state fallback - treat as paused to avoid duplicate scans.
+      scanBtn.textContent = '▶️ Resume';
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
+      updateStatus('⏸️', 'Paused', 'Resume to continue scanning', 'stopped');
     }
   }
   // Load cached results if no active scan
   else if (settings.scanResults && settings.scanResults.length > 0) {
     inactiveAccounts = settings.scanResults;
     displayResults();
+    if (settings.scanSkipped && settings.scanSkipped.length > 0) {
+      skippedAccounts = settings.scanSkipped;
+      displaySkipped();
+    }
+  }
+
+  if (settings.unfollowDebug && settings.unfollowDebug.length > 0) {
+    debugEntries = settings.unfollowDebug;
+    displayDebug();
   }
 
   // Check if we're on X.com and inject script if needed
@@ -140,8 +180,13 @@ async function initializeTab() {
     try {
       await sendMessageToTab({ action: 'ping' });
       console.log('✅ Content script is ready');
-      updateStatus('✅', 'Ready to scan', 'Click "Start Scan" to begin', 'ready');
-      scanBtn.disabled = false;
+      // CODEX: Avoid overwriting active scan/unfollow UI state.
+      if (!isScanning && !isUnfollowing) {
+        updateStatus('✅', 'Ready to scan', 'Click "Start Scan" to begin', 'ready');
+        scanBtn.disabled = false;
+      } else {
+        scanBtn.disabled = true;
+      }
     } catch (err) {
       console.log('⚠️ Content script not responding, injecting...');
       // Content script not loaded - inject it
@@ -241,6 +286,7 @@ async function showTimeWarning() {
 // Resume an existing paused scan
 async function resumeExistingScan(scanState) {
   isScanning = true;
+  scanBtn.textContent = '🔍 Scanning...';
   scanBtn.disabled = true;
   stopBtn.disabled = false;
 
@@ -274,13 +320,25 @@ scanBtn.addEventListener('click', async () => {
 
   // Check if there's a paused scan to resume
   const data = await chrome.storage.local.get(['scanState']);
-  if (data.scanState && data.scanState.currentIndex > 0) {
-    // Resume existing scan
-    resumeExistingScan(data.scanState);
-  } else {
-    // Start new scan
-    showTimeWarning();
+  if (data.scanState) {
+    const state = data.scanState;
+    const now = Date.now();
+    const heartbeatAge = state.lastHeartbeat ? now - state.lastHeartbeat : null;
+    const isLikelyRunning = state.status === 'running' || (heartbeatAge !== null && heartbeatAge < HEARTBEAT_STALE_MS);
+    const isPaused = state.status === 'paused' || (!isLikelyRunning && state.currentIndex > 0 && state.currentIndex < state.accounts.length);
+
+    // CODEX: Only resume if paused; otherwise avoid spawning duplicates.
+    if (isPaused) {
+      resumeExistingScan(state);
+      return;
+    }
+    if (isLikelyRunning) {
+      return;
+    }
   }
+
+  // Start new scan
+  showTimeWarning();
 });
 
 // Cancel scan from warning modal
@@ -299,7 +357,7 @@ async function startActualScan() {
   if (isScanning) return;
 
   isScanning = true;
-  scanBtn.textContent = '🔍 Start Scan';
+  scanBtn.textContent = '🔍 Scanning...';
   scanBtn.disabled = true;
   stopBtn.disabled = false;
   resultsSection.style.display = 'none';
@@ -345,15 +403,20 @@ stopBtn.addEventListener('click', async () => {
     const response = await sendMessageToTab({ action: 'stop' });
 
     // Get the current scan state to show progress
-    const data = await chrome.storage.local.get(['scanState', 'scanResults']);
+    const data = await chrome.storage.local.get(['scanState', 'scanResults', 'scanSkipped']);
     const scanState = data.scanState;
     const results = data.scanResults || response?.partialResults || [];
+    const skipped = data.scanSkipped || scanState?.skipped || [];
 
     if (results.length > 0) {
       inactiveAccounts = results;
       const remaining = scanState ? scanState.accounts.length - scanState.currentIndex : 0;
       updateStatus('⏸️', `Paused - ${results.length} inactive found`, remaining > 0 ? `${remaining} accounts remaining` : 'Review results below', 'stopped');
       displayResults();
+      if (skipped.length > 0) {
+        skippedAccounts = skipped;
+        displaySkipped();
+      }
 
       // Show Resume button if there's more to scan
       if (remaining > 0) {
@@ -372,13 +435,21 @@ stopBtn.addEventListener('click', async () => {
 
 // Clear all saved data
 clearBtn.addEventListener('click', async () => {
-  await chrome.storage.local.remove(['scanState', 'scanResults', 'scanInProgress', 'scanIntent']);
+  await chrome.storage.local.remove(['scanState', 'scanResults', 'scanSkipped', 'unfollowDebug', 'scanInProgress', 'scanIntent']);
   inactiveAccounts = [];
+  skippedAccounts = [];
+  debugEntries = [];
   resultsSection.style.display = 'none';
   progressContainer.style.display = 'none';
   currentAccount.style.display = 'none';
   etaDisplay.style.display = 'none';
   inactiveBadge.style.display = 'none';
+  if (skippedSection) {
+    skippedSection.style.display = 'none';
+  }
+  if (debugSection) {
+    debugSection.style.display = 'none';
+  }
   scanBtn.textContent = '🔍 Start Scan';
   updateStatus('✅', 'Ready to scan', 'Storage cleared - click "Start Scan" to begin', 'ready');
   resetScanState();
@@ -394,13 +465,22 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       handleScanProgress(message);
       break;
     case 'scanComplete':
-      handleScanComplete(message.results);
+      handleScanComplete(message.results, message.skipped);
       break;
     case 'unfollowProgress':
       handleUnfollowProgress(message);
       break;
     case 'unfollowComplete':
-      handleUnfollowComplete(message.unfollowed, message.usernames);
+      handleUnfollowComplete(message.unfollowed, message.usernames, message.skipped);
+      break;
+    case 'unfollowDebug':
+      if (message.entry) {
+        debugEntries.push(message.entry);
+        if (debugEntries.length > 50) {
+          debugEntries = debugEntries.slice(-50);
+        }
+        displayDebug();
+      }
       break;
     case 'error':
       updateStatus('❌', 'Error', message.error, 'error');
@@ -417,7 +497,8 @@ let lastProgressCurrent = 0;
 
 // Handle scan progress updates
 function handleScanProgress(data) {
-  const { current, total, status, currentAccount: account, inactiveFound } = data;
+  const { current, total, status, currentAccount: account, inactiveFound, skippedFound } = data;
+  lastScanProgressAt = Date.now();
 
   // Update status
   updateStatus('🔍', status || 'Scanning...', `Checked ${current} of ${total} accounts`, 'scanning');
@@ -483,28 +564,45 @@ function handleScanProgress(data) {
     inactiveBadge.style.display = 'inline-block';
     inactiveFoundCount.textContent = inactiveFound;
   }
+
+  if (skippedFound !== undefined && skippedFound > 0) {
+    if (skippedSection) {
+      skippedSection.style.display = 'block';
+      skippedCount.textContent = skippedFound;
+    }
+  }
 }
 
 // Handle scan completion
-function handleScanComplete(results) {
+function handleScanComplete(results, skipped = []) {
   inactiveAccounts = results || [];
+  skippedAccounts = skipped || [];
 
   // Clear scan in progress flag
   chrome.storage.local.remove('scanInProgress');
 
   // Cache results
-  chrome.storage.local.set({ scanResults: inactiveAccounts });
+  chrome.storage.local.set({ scanResults: inactiveAccounts, scanSkipped: skippedAccounts });
 
   resetScanState();
   scanBtn.textContent = '🔍 Start Scan';
   currentAccount.style.display = 'none';
 
   if (inactiveAccounts.length === 0) {
-    updateStatus('🎉', 'All accounts active!', 'No inactive accounts found', 'success');
-    progressContainer.style.display = 'none';
+    if (skippedAccounts.length > 0) {
+      updateStatus('⚠️', 'Scan complete with skips', 'Some accounts could not be checked', 'warning');
+      progressContainer.style.display = 'none';
+    } else {
+      updateStatus('🎉', 'All accounts active!', 'No inactive accounts found', 'success');
+      progressContainer.style.display = 'none';
+    }
   } else {
     updateStatus('✅', `Found ${inactiveAccounts.length} inactive`, 'Review and select accounts to unfollow', 'complete');
     displayResults();
+  }
+
+  if (skippedAccounts.length > 0) {
+    displaySkipped();
   }
 }
 
@@ -537,6 +635,59 @@ function displayResults() {
   updateSelectedCount();
 }
 
+// Display skipped accounts
+function displaySkipped() {
+  if (!skippedSection || !skippedList || !skippedCount) return;
+  resultsSection.style.display = 'block';
+  skippedSection.style.display = skippedAccounts.length > 0 ? 'block' : 'none';
+  skippedCount.textContent = skippedAccounts.length;
+  if (retrySkippedBtn) retrySkippedBtn.disabled = skippedAccounts.length === 0;
+  if (clearSkippedBtn) clearSkippedBtn.disabled = skippedAccounts.length === 0;
+  skippedList.innerHTML = '';
+
+  skippedAccounts.forEach((account) => {
+    const item = document.createElement('div');
+    item.className = 'skipped-item';
+    item.innerHTML = `
+      <div class="account-info">
+        <div class="account-name">${escapeHtml(account.name || account.username)}</div>
+        <div class="account-handle">@${escapeHtml(account.username)}</div>
+      </div>
+      <div class="skipped-reason">${escapeHtml(account.reason || 'unknown')}</div>
+    `;
+    skippedList.appendChild(item);
+  });
+}
+
+function displayDebug() {
+  if (!debugSection || !debugList || !debugCount) return;
+  if (debugEntries.length === 0) {
+    debugSection.style.display = 'none';
+    return;
+  }
+
+  resultsSection.style.display = 'block';
+  debugSection.style.display = 'block';
+  const recent = debugEntries.slice(-50).reverse();
+  debugCount.textContent = recent.length;
+  debugList.innerHTML = '';
+
+  recent.forEach(entry => {
+    const item = document.createElement('div');
+    item.className = 'debug-item';
+    const statusTag = entry.success ? '✅' : '⚠️';
+    const method = entry.method || 'unknown';
+    const username = entry.username || 'unknown';
+    const reason = entry.reason || 'ok';
+    item.innerHTML = `
+      <span class="debug-tag">${statusTag} ${escapeHtml(method)}</span>
+      <span>@${escapeHtml(username)}</span>
+      <span class="debug-reason">${escapeHtml(reason)}</span>
+    `;
+    debugList.appendChild(item);
+  });
+}
+
 // Update selected count
 function updateSelectedCount() {
   const checkboxes = accountsList.querySelectorAll('input[type="checkbox"]:checked');
@@ -554,6 +705,56 @@ selectAllBtn.addEventListener('click', () => {
 deselectAllBtn.addEventListener('click', () => {
   accountsList.querySelectorAll('input[type="checkbox"]').forEach(cb => cb.checked = false);
   updateSelectedCount();
+});
+
+// Retry skipped accounts
+retrySkippedBtn?.addEventListener('click', async () => {
+  if (isScanning || isUnfollowing || skippedAccounts.length === 0) return;
+
+  isScanning = true;
+  scanBtn.textContent = '🔍 Scanning...';
+  scanBtn.disabled = true;
+  stopBtn.disabled = false;
+
+  skippedAccounts = [];
+  await chrome.storage.local.remove('scanSkipped');
+  displaySkipped();
+
+  scanStartTime = Date.now();
+  lastCheckTimes = [];
+  progressContainer.style.display = 'block';
+  progressFill.style.width = '0%';
+  progressCurrent.textContent = '0';
+  progressTotal.textContent = skippedAccounts.length;
+  etaDisplay.style.display = 'none';
+
+  updateStatus('🔍', 'Retrying skipped...', `Checked 0 of ${skippedAccounts.length} accounts`, 'scanning');
+
+  try {
+    const inactiveDays = parseInt(inactiveDaysInput.value) || 30;
+    await sendMessageToTab({
+      action: 'retrySkipped',
+      accounts: skippedAccounts,
+      inactiveDays: inactiveDays
+    });
+  } catch (error) {
+    console.error('Error retrying skipped:', error);
+    updateStatus('❌', 'Error', error.message, 'error');
+    resetScanState();
+  }
+});
+
+// Clear skipped accounts
+clearSkippedBtn?.addEventListener('click', async () => {
+  skippedAccounts = [];
+  await chrome.storage.local.remove('scanSkipped');
+  displaySkipped();
+});
+
+clearDebugBtn?.addEventListener('click', async () => {
+  debugEntries = [];
+  await chrome.storage.local.remove('unfollowDebug');
+  displayDebug();
 });
 
 // Unfollow selected
@@ -612,6 +813,7 @@ confirmNo.addEventListener('click', () => {
 // Handle unfollow progress
 function handleUnfollowProgress(data) {
   const { current, total, status } = data;
+  lastScanProgressAt = Date.now();
   const percent = (current / total) * 100;
 
   updateStatus('🚫', status || 'Unfollowing...', `${current} of ${total} completed`, 'scanning');
@@ -621,10 +823,14 @@ function handleUnfollowProgress(data) {
 }
 
 // Handle unfollow completion
-function handleUnfollowComplete(count, usernames) {
+function handleUnfollowComplete(count, usernames, skipped = []) {
   resetScanState();
 
-  updateStatus('✅', `Unfollowed ${count} accounts`, 'Your following list is cleaner now!', 'success');
+  if (skipped && skipped.length > 0) {
+    updateStatus('⚠️', `Unfollowed ${count} accounts`, `${skipped.length} could not be unfollowed`, 'warning');
+  } else {
+    updateStatus('✅', `Unfollowed ${count} accounts`, 'Your following list is cleaner now!', 'success');
+  }
 
   // Remove unfollowed accounts from the list
   if (usernames && usernames.length > 0) {
@@ -641,6 +847,11 @@ function handleUnfollowComplete(count, usernames) {
       resultsSection.style.display = 'none';
       progressContainer.style.display = 'none';
     }
+  }
+
+  if (skipped && skipped.length > 0) {
+    // Keep skipped accounts in the inactive list for retry.
+    console.log(`⚠️ ${skipped.length} accounts could not be unfollowed`);
   }
 }
 
@@ -674,13 +885,29 @@ setInterval(async () => {
   // Refresh state from storage to keep UI updated
   const data = await chrome.storage.local.get(['scanState']);
   if (data.scanState) {
+    const shouldSyncFromStorage = !isScanning || (Date.now() - lastScanProgressAt > 2000);
+    if (!shouldSyncFromStorage) {
+      return;
+    }
     const state = data.scanState;
+    const now = Date.now();
+    const heartbeatAge = state.lastHeartbeat ? now - state.lastHeartbeat : null;
+    const isLikelyRunning = state.status === 'running' || (heartbeatAge !== null && heartbeatAge < HEARTBEAT_STALE_MS);
+    const isPaused = state.status === 'paused' || (!isLikelyRunning && state.currentIndex > 0 && state.currentIndex < state.accounts.length);
 
-    // Update UI if we're scanning
-    if (!isScanning) {
-      isScanning = true;
-      scanBtn.disabled = true;
-      stopBtn.disabled = false;
+    // CODEX: Respect paused vs running status when syncing UI.
+    if (isPaused) {
+      isScanning = false;
+      scanBtn.textContent = '▶️ Resume';
+      scanBtn.disabled = false;
+      stopBtn.disabled = true;
+    } else {
+      if (!isScanning) {
+        isScanning = true;
+        scanBtn.textContent = '🔍 Scanning...';
+        scanBtn.disabled = true;
+        stopBtn.disabled = false;
+      }
     }
 
     progressContainer.style.display = 'block';
@@ -695,17 +922,27 @@ setInterval(async () => {
       inactiveFoundCount.textContent = state.inactive.length;
     }
 
+    if (state.skipped && state.skipped.length > 0) {
+      skippedAccounts = state.skipped;
+      displaySkipped();
+    }
+
     // Update status
     const progressPct = Math.round((state.currentIndex / state.accounts.length) * 100);
     const currentAcc = state.accounts[state.currentIndex]?.username || '...';
-    updateStatus('🔍', `[${progressPct}%] Checking @${currentAcc}...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
+    if (isPaused) {
+      const remaining = state.accounts.length - state.currentIndex;
+      updateStatus('⏸️', `Paused - ${state.inactive?.length || 0} inactive found`, `${remaining} accounts remaining`, 'stopped');
+    } else {
+      updateStatus('🔍', `[${progressPct}%] Checking @${currentAcc}...`, `Checked ${state.currentIndex} of ${state.accounts.length} accounts`, 'scanning');
+    }
 
     // Show current account
     currentAccount.style.display = 'block';
     currentAccountName.textContent = '@' + currentAcc;
 
     // Update ETA
-    if (state.startTime && state.currentIndex > 0) {
+    if (!isPaused && state.startTime && state.currentIndex > 0) {
       const elapsed = (Date.now() - state.startTime) / 1000;
       const avgPerAccount = elapsed / state.currentIndex;
       const remaining = state.accounts.length - state.currentIndex;
@@ -717,7 +954,8 @@ setInterval(async () => {
     // Check if scan completed
     if (state.currentIndex >= state.accounts.length) {
       inactiveAccounts = state.inactive || [];
-      chrome.storage.local.set({ scanResults: inactiveAccounts });
+      skippedAccounts = state.skipped || [];
+      chrome.storage.local.set({ scanResults: inactiveAccounts, scanSkipped: skippedAccounts });
       chrome.storage.local.remove(['scanState']);
       resetScanState();
       currentAccount.style.display = 'none';
@@ -728,14 +966,22 @@ setInterval(async () => {
         updateStatus('🎉', 'All accounts active!', 'No inactive accounts found', 'success');
         progressContainer.style.display = 'none';
       }
+      if (skippedAccounts.length > 0) {
+        displaySkipped();
+      }
     }
   } else if (isScanning) {
     // Scan was stopped or completed externally
-    const results = await chrome.storage.local.get(['scanResults']);
+    const results = await chrome.storage.local.get(['scanResults', 'scanSkipped']);
     if (results.scanResults && results.scanResults.length > 0) {
       inactiveAccounts = results.scanResults;
       displayResults();
     }
+    if (results.scanSkipped && results.scanSkipped.length > 0) {
+      skippedAccounts = results.scanSkipped;
+      displaySkipped();
+    }
+    scanBtn.textContent = '🔍 Start Scan';
     resetScanState();
   }
 }, 1000);

@@ -77,6 +77,29 @@
       <div class="accounts-list" id="accountsList">
         <!-- Account items will be inserted here -->
       </div>
+      <div class="skipped-section" id="skippedSection" style="display: none;">
+        <div class="skipped-header">
+          <h3>Skipped Accounts (<span id="skippedCount">0</span>)</h3>
+          <div class="skipped-actions">
+            <button id="retrySkippedBtn" class="btn-link">Retry</button>
+            <button id="clearSkippedBtn" class="btn-link">Clear</button>
+          </div>
+        </div>
+        <div class="accounts-list skipped-list" id="skippedList">
+          <!-- Skipped accounts inserted here -->
+        </div>
+      </div>
+      <div class="debug-section" id="debugSection" style="display: none;">
+        <div class="debug-header">
+          <h3>Unfollow Debug (last <span id="debugCount">0</span>)</h3>
+          <div class="debug-actions">
+            <button id="clearDebugBtn" class="btn-link">Clear</button>
+          </div>
+        </div>
+        <div class="accounts-list debug-list" id="debugList">
+          <!-- Debug entries inserted here -->
+        </div>
+      </div>
       <div class="unfollow-actions">
         <button id="unfollowSelectedBtn" class="btn btn-danger" disabled>
           🚫 Unfollow Selected (<span id="selectedCount">0</span>)
